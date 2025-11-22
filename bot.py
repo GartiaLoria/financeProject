@@ -1,3 +1,4 @@
+import os
 from flask import Flask
 from threading import Thread
 
@@ -90,3 +91,4 @@ if __name__ == '__main__':
     app.add_handler(echo_handler)
     print("Bot is running...")
     app.run_polling()
+
