@@ -21,7 +21,7 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 # --- CONFIGURATION ---
 # ⚠️ PASTE YOUR TELEGRAM TOKEN HERE
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "http://localhost:8501"
+DASHBOARD_URL = "http://financeproject-daozlrb2223siae3uzttph.streamlit.app"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Safety check: Ignore edits or non-text updates
@@ -151,4 +151,5 @@ if __name__ == '__main__':
 #     echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
+
 #     app.run_polling()
