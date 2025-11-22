@@ -1,0 +1,8 @@
+streamlit
+google-generativeai
+pymongo
+python-telegram-bot
+pandas
+plotly
+certifi
+flask
