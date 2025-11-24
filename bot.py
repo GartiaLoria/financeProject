@@ -7,7 +7,7 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "http://localhost:8501" # Update this to your real Streamlit URL
+DASHBOARD_URL = "https://financeproject-daozlrb2223siae3uzttph.streamlit.app/" # Update this to your real Streamlit URL
 
 # --- KEEP ALIVE ---
 flask_app = Flask('')
@@ -186,5 +186,6 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
