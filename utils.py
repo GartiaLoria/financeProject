@@ -17,7 +17,7 @@ db = cluster["expense_tracker"]
 collection = db["expenses"]
 
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- FUNCTIONS ---
 
@@ -418,6 +418,7 @@ def get_chat_response(query, data_list):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
