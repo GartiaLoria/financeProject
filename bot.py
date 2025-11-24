@@ -7,24 +7,24 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "https://your-app-url.onrender.com" # ⚠️ Put your real Render/Streamlit link here
+DASHBOARD_URL = "https://your-app-url.onrender.com" # ⚠️ REPLACE THIS WITH YOUR REAL URL
 
-# --- EXPANDED EMOJI MAP ---
+# --- COOL EMOJI MAP ---
 CATEGORY_EMOJIS = {
-    "Food": "🍔", 
+    "Food": "🍜", 
     "Groceries": "🥦", 
-    "Travel": "🚕", 
+    "Travel": "🚖", 
     "Medical": "💊",
-    "Subscriptions": "📅",
-    "Electronics": "🔌",
+    "Subscriptions": "💳", 
+    "Electronics": "💻", 
     "Shopping": "🛍️",
     "Education": "📚",
     "Gifts": "🎁", 
-    "Outings": "🎉", 
-    "Rent & Utilities": "🏠", 
-    "Investments": "📈", 
-    "Entertainment": "🍿", 
-    "Personal Care": "🧴", 
+    "Outings": "🎡", 
+    "Rent & Utilities": "⚡", 
+    "Investments": "💸", 
+    "Entertainment": "🎬", 
+    "Personal Care": "🛁", 
     "Loans/EMI": "🏦", 
     "Debt": "📝", 
     "Loan Given": "🤝", 
@@ -58,7 +58,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              await update.message.reply_text(f"📊 [Click to Open Dashboard]({DASHBOARD_URL})", parse_mode='Markdown')
              return
         
-        # Memory: 300 Items
+        # MEMORY: 300 Items
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
         data_context = list(cursor)
 
@@ -66,8 +66,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📂 No data found yet.")
             return
 
-        processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
-        answer = get_chat_response(user_text, str(data_context))
+        processing_msg = await update.message.reply_text(f"🤔 Crunching the numbers...")
+        # We pass the LIST of data, not string, so Pandas can use it
+        answer = get_chat_response(user_text, data_context) 
         await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
         
     # --- PATH B: TRANSACTION ---
@@ -86,20 +87,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Dynamic Emoji Logic
                 cat = data['c']
-                icon = CATEGORY_EMOJIS.get(cat, "✅") # Default to ✅ if category not in list
-                if data['a'] < 0: icon = "💰" 
+                icon = CATEGORY_EMOJIS.get(cat, "✅") 
+                if data['a'] < 0: icon = "💰" # Special icon for Income
                 
                 line = f"{icon} **{data['i']}**: {data['a']} _({cat})_"
-                if data.get('n'): line += f"\n   └ 📌 {data['n']}"
+                if data.get('n'): line += f"\n   └ 🎗️ _{data['n']}_" # Cool Indented Note
                 reply_lines.append(line)
 
         summary = "\n".join(reply_lines)
         
+        # Cool Receipt Style Message
         msg = (
-            f"✨ **Transaction Saved**\n\n"
+            f"✨ **Transaction Saved** ✨\n\n"
             f"{summary}\n"
             f"────────────────\n"
-            f"📈 [Open Dashboard]({DASHBOARD_URL})"
+            f"📉 [Dashboard]({DASHBOARD_URL})"
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
 
@@ -204,6 +206,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
