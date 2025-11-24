@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -18,20 +20,27 @@ def keep_alive():
     t = Thread(target=run_http)
     t.start()
 
-# --- EMOJI MAPPING ---
-CATEGORY_EMOJIS = {
-    "Food": "🍔", "Groceries": "🥦", "Travel": "🚕", "Medical": "💊",
-    "Subscriptions": "📅", "Electronics": "🔌", "Shopping": "🛍️", "Education": "📚",
-    "Gifts": "🎁", "Outings": "🎉", "Rent & Utilities": "🏠", "Investments": "📈",
-    "Entertainment": "🎬", "Personal Care": "🧴", "Loans/EMI": "🏦",
-    "Miscellaneous": "📦", "Debt": "📝", "Loan Given": "💸"
-}
+# --- HELPER: EMOJI MAP ---
+def get_category_emoji(category):
+    map = {
+        "Food": "🍔", "Groceries": "🥦", "Travel": "🚖", "Medical": "💊",
+        "Subscriptions": "📅", "Electronics": "🔌", "Shopping": "🛍️",
+        "Education": "📚", "Gifts": "🎁", "Outings": "🎉", 
+        "Rent & Utilities": "🏠", "Investments": "📈", "Entertainment": "🎬",
+        "Personal Care": "🧴", "Loans/EMI": "🏦", "Debt": "📝", 
+        "Loan Given": "🤝", "Miscellaneous": "📦"
+    }
+    return map.get(category, "💵")
 
-def get_icon(data):
-    if data.get('action') == 'delete': return "🗑️"
-    if data['a'] < 0: return "🤑"
-    cat = data.get('c', 'Miscellaneous')
-    return CATEGORY_EMOJIS.get(cat, "✅")
+# --- HELPER: FORMAT DATA ---
+def format_transactions(cursor_list):
+    clean_data = []
+    for entry in cursor_list:
+        date_str = entry['date'].strftime('%Y-%m-%d')
+        clean_entry = {"Date": date_str, "Item": entry['i'], "Amount": entry['a'], "Category": entry['c']}
+        if entry.get('n'): clean_entry["Note"] = entry['n']
+        clean_data.append(clean_entry)
+    return json.dumps(clean_data)
 
 # --- BOT LOGIC ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,17 +50,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_lower = user_text.lower()
     
-    # --- STEP 1: PARSE INTENT ---
+    # --- PATH A: ANALYSIS / CHAT ---
     parsed_list = parse_expense_with_gemini(user_text)
 
-    # --- PATH A: ANALYSIS / CHAT ---
     if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower or "calculate" in text_lower:
         
         if "dashboard" in text_lower:
-             # HTML Link format
-             await update.message.reply_text(f"📊 <b>Dashboard:</b> <a href='{DASHBOARD_URL}'>Click Here</a>", parse_mode='HTML')
+             await update.message.reply_text(f"📊 **Dashboard Link:**\n{DASHBOARD_URL}", parse_mode='Markdown')
              return
         
+        # Memory: 300 Items
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
         data_list = list(cursor)
 
@@ -59,42 +67,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📂 No data found yet.")
             return
 
+        clean_context_str = format_transactions(data_list)
         processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
         
-        answer = get_chat_response(user_text, data_list)
+        answer = get_chat_response(user_text, clean_context_str)
         
-        # ⚠️ WE USE HTML PARSE MODE NOW
-        await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='HTML')
+        # Safe Markdown Reply
+        try:
+            await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
+        except Exception:
+            await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode=None)
         
-    # --- PATH B: TRANSACTION ---
+    # --- PATH B: SAVE TRANSACTION ---
     else:
         reply_lines = []
-        
         for data in parsed_list:
             if data.get('action') == 'delete':
-                success, item, date = delete_expense(data)
+                success, deleted_item, deleted_date = delete_expense(data)
                 if success: 
-                    d_str = date.strftime('%d %b')
-                    # HTML Strikethrough
-                    reply_lines.append(f"🗑️ <s>{item}</s> ({data['a']}) removed")
+                    date_str = deleted_date.strftime('%d %b')
+                    reply_lines.append(f"🗑️ **Deleted:** {deleted_item} ({data['a']})")
                 else: 
-                    reply_lines.append(f"⚠️ Not found: {data['i']}")
+                    reply_lines.append(f"⚠️ **Not Found:** {data['i']} ({data['a']})")
             else:
                 add_expense(data)
-                icon = get_icon(data)
-                amount_str = f"{data['a']}"
+                emoji = get_category_emoji(data['c'])
                 
-                # HTML Bold and Italic
-                line = f"{icon} <b>{data['i']}</b>: {amount_str}"
-                if data.get('n'): line += f"\n   └ 📌 <i>{data['n']}</i>"
+                # Special icon for Income/Repayment
+                if data['a'] < 0: 
+                    emoji = "🤑"
+                
+                # Receipt Style Line
+                line = f"{emoji} **{data['i']}**\n      └ {data['a']}  |  _{data['c']}_"
+                
+                if data.get('n'): 
+                    line += f"\n      └ 📌 {data['n']}"
                 
                 reply_lines.append(line)
 
-        header = f"🧾 <b>Saved {len(parsed_list)} Entries</b>"
-        body = "\n".join(reply_lines)
-        footer = f"────────────────\n📊 <a href='{DASHBOARD_URL}'>Dashboard</a>"
+        summary = "\n\n".join(reply_lines)
+        receipt = f"🧾 **Transaction Saved**\n────────────────\n{summary}\n────────────────\n📊 [Dashboard]({DASHBOARD_URL})"
         
-        await update.message.reply_text(f"{header}\n\n{body}\n{footer}", parse_mode='HTML', disable_web_page_preview=True)
+        try:
+            await update.message.reply_text(receipt, parse_mode='Markdown')
+        except:
+            await update.message.reply_text(receipt, parse_mode=None)
 
 if __name__ == '__main__':
     keep_alive()
@@ -197,6 +214,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
