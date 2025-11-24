@@ -16,7 +16,7 @@ db = cluster["expense_tracker"]
 collection = db["expenses"]
 
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- FUNCTIONS ---
 
@@ -34,19 +34,21 @@ def clean_json_string(text):
 
 def parse_expense_with_gemini(user_text):
     """
-    Extracts transactions using YOUR EXACT DEFINITIONS.
+    Router & Extractor with STRICT Category Rules.
     """
     prompt = f"""
-    You are a specialized Expense Tracker Parser. 
+    You are a Router & Data Extractor.
     User Input: "{user_text}"
     
-    Task: Extract transactions into a JSON LIST.
-    
-    --- MATH RULE ---
-    Always interpret entries of the form A/B as A divided by B = my share.
-    (Example: "Uber 100/2" -> Amount is 50).
+    STEP 1: IDENTIFY INTENT
+    - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{"is_chat": true}}
+    - Is the user entering transaction data? -> Extract the data.
 
-    --- CATEGORY CLASSIFICATION RULES ---
+    STEP 2: EXTRACT DATA (If transaction)
+    - MATH: Calculate "A/B" immediately (e.g. "100/2" -> 50).
+    - NOTE: Extract context note into 'n' only if user says "save c" or "context".
+
+    STEP 3: CATEGORIZE (STRICT RULES)
     1. Food: Meals, drinks, snacks, tea, restaurant, meal plans. NOT Outings.
     2. Groceries: Raw kitchen items, fruits, vegetables, grains, spices.
     3. Travel: Bus, auto, cab, bike, fuel, train, flight.
@@ -56,40 +58,43 @@ def parse_expense_with_gemini(user_text):
     7. Shopping: Clothes, shoes, bags, accessories, watches, wallets.
     8. Education: Books, courses, exams, stationery, work materials, skill dev.
     9. Gifts: Birthday treats, gifts for others. NOT Outings.
-    10. Outings: Hangouts, events, festivals, clubs, trips.
+    10. Outings: Hangouts, events, festivals (Balijatra), clubs, trips.
     11. Rent & Utilities: Rent, electricity, water, maintenance.
     12. Investments: Savings, deposits, mutual funds.
     13. Entertainment: Movie tickets, games, events (non-outing).
     14. Personal Care: Soap, shampoo, cosmetics, hygiene.
     15. Loans/EMI: Repaying loans, EMIs.
     16. Miscellaneous: Anything else.
+    17. Debt: Future payments ("Owe", "Will pay", "Bill due").
+    18. Loan Given: Past payments to others ("Lent", "Gave").
 
-    --- FIELDS ---
-    'action': 'delete' if removing/undoing, else 'add'.
-    'i': Item Name.
-    'a': Amount (+ for expense/lending, - for income/repayment).
-    'c': Category (Use the exact names from above).
-    'n': Context Note (Only if "save c" or "context" is present).
+    Output JSON (for transactions):
+    [ {{"action": "add", "i": "Item", "a": 50, "c": "Category", "n": ""}} ]
     
-    Output JSON LIST:
-    [
-      {{"action": "add", "i": "Item", "a": 50, "c": "Category", "n": ""}}
-    ]
+    Output JSON (for chat):
+    {{ "is_chat": true }}
     """
     try:
         response = model.generate_content(prompt)
         cleaned_text = clean_json_string(response.text)
         data = json.loads(cleaned_text)
         
-        if isinstance(data, dict): data = [data]
+        if isinstance(data, dict) and data.get("is_chat"):
+            return None
             
+        if isinstance(data, dict): data = [data]
+        
+        valid_data = []
         for entry in data:
+            if 'a' not in entry: continue 
             if 'i' in entry: entry['i'] = str(entry['i']).title()
             if 'c' in entry: entry['c'] = str(entry['c']).title()
             if 'a' in entry: entry['a'] = float(entry['a'])
             if 'n' not in entry: entry['n'] = ""
+            valid_data.append(entry)
             
-        return data
+        return valid_data if valid_data else None
+
     except Exception as e:
         print(f"Parsing Error: {e}")
         return None
@@ -104,7 +109,6 @@ def add_expense(data):
 def delete_expense(data):
     query = {"a": data['a'], "i": {"$regex": data['i'], "$options": "i"}}
     matches = list(collection.find(query).sort("date", -1))
-    
     if len(matches) > 0:
         target = matches[0]
         collection.delete_one({"_id": target["_id"]})
@@ -117,21 +121,17 @@ def get_chat_response(query, user_data_context):
     User Data (JSON): {user_data_context}
     User Question: {query}
     
-    RESPONSE FORMATTING RULES:
-    1. **Group by Item:** Group similar entries (e.g., all "Bus" entries together).
-    2. **Show Details:** Under the group name, list the individual transactions.
-    3. **Format:** Use a bullet point '•' followed by: `Amount (Date)`.
-    4. **Context:** If a note ('n') exists, add it next to the date in *italics*.
-    5. **Totals:** Show the total for that item group in Bold.
-    6. **Grand Total:** Show at the bottom.
+    --- RESPONSE LOGIC ---
+    MODE A: SUMMARY (Default)
+    If user asks "How much...", "Total...", "Summary":
+    1. Group similar items (Sum "Bus"). 
+    2. Format: "🚌 **Bus** (X trips): [Total]"
     
-    EXAMPLE OUTPUT:
+    MODE B: BREAKDOWN (If user asks "Breakdown", "List", "Details")
+    1. List every single entry sorted by date.
+    2. Format: "24 Nov: 50.0"
     
-    🚌 **Bus** (Total: 384.5)
-    • 31.5 (01 Nov)
-    • 4.5 (02 Nov) - *to office*
-    
-    **Grand Total: ...**
+    General: Professional, friendly, accurate math.
     """
     try:
         response = model.generate_content(prompt)
@@ -376,5 +376,6 @@ def get_chat_response(query, user_data_context):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
