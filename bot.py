@@ -48,12 +48,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower or "calculate" in text_lower:
         
         if "dashboard" in text_lower:
-             await update.message.reply_text(f"📊 **Dashboard:** [Click Here]({DASHBOARD_URL})", parse_mode='Markdown')
+             # HTML Link format
+             await update.message.reply_text(f"📊 <b>Dashboard:</b> <a href='{DASHBOARD_URL}'>Click Here</a>", parse_mode='HTML')
              return
         
-        # Fetch Memory (300 items)
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
-        data_list = list(cursor) # <-- ⚠️ WE PASS THIS RAW LIST NOW
+        data_list = list(cursor)
 
         if not data_list:
             await update.message.reply_text("📂 No data found yet.")
@@ -61,10 +61,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
         
-        # ⚠️ PASS RAW DATA TO PANDAS ENGINE
         answer = get_chat_response(user_text, data_list)
         
-        await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
+        # ⚠️ WE USE HTML PARSE MODE NOW
+        await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='HTML')
         
     # --- PATH B: TRANSACTION ---
     else:
@@ -75,7 +75,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 success, item, date = delete_expense(data)
                 if success: 
                     d_str = date.strftime('%d %b')
-                    reply_lines.append(f"🗑️ ~{item}~ ({data['a']}) removed")
+                    # HTML Strikethrough
+                    reply_lines.append(f"🗑️ <s>{item}</s> ({data['a']}) removed")
                 else: 
                     reply_lines.append(f"⚠️ Not found: {data['i']}")
             else:
@@ -83,16 +84,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 icon = get_icon(data)
                 amount_str = f"{data['a']}"
                 
-                line = f"{icon} **{data['i']}**: {amount_str}"
-                if data.get('n'): line += f"\n   └ 📌 _{data['n']}_"
+                # HTML Bold and Italic
+                line = f"{icon} <b>{data['i']}</b>: {amount_str}"
+                if data.get('n'): line += f"\n   └ 📌 <i>{data['n']}</i>"
                 
                 reply_lines.append(line)
 
-        header = f"🧾 **Saved {len(parsed_list)} Entries**"
+        header = f"🧾 <b>Saved {len(parsed_list)} Entries</b>"
         body = "\n".join(reply_lines)
-        footer = f"────────────────\n📊 [Dashboard]({DASHBOARD_URL})"
+        footer = f"────────────────\n📊 <a href='{DASHBOARD_URL}'>Dashboard</a>"
         
-        await update.message.reply_text(f"{header}\n\n{body}\n{footer}", parse_mode='Markdown')
+        await update.message.reply_text(f"{header}\n\n{body}\n{footer}", parse_mode='HTML', disable_web_page_preview=True)
 
 if __name__ == '__main__':
     keep_alive()
@@ -195,6 +197,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
