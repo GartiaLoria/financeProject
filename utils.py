@@ -4,6 +4,7 @@ from pymongo import MongoClient
 from datetime import datetime
 import json
 import re
+import pandas as pd # <--- Ensures exact math
 import certifi
 
 # --- CONFIGURATION ---
@@ -34,11 +35,10 @@ def clean_json_string(text):
 
 def parse_expense_with_gemini(user_text):
     """
-    Router & Extractor with STRICT Category Rules.
+    Extracts transactions using STRICT USER RULES.
     """
     prompt = f"""
-    You are a Router & Data Extractor.
-    User Input: "{user_text}"
+    You are a specialized Data Extractor. User Input: "{user_text}"
     
     STEP 1: IDENTIFY INTENT
     - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{"is_chat": true}}
@@ -67,11 +67,11 @@ def parse_expense_with_gemini(user_text):
     16. Miscellaneous: Anything else.
     17. Debt: Future payments ("Owe", "Will pay", "Bill due").
     18. Loan Given: Past payments to others ("Lent", "Gave").
-
-    Output JSON (for transactions):
+    
+    Output JSON (Transaction):
     [ {{"action": "add", "i": "Item", "a": 50, "c": "Category", "n": ""}} ]
     
-    Output JSON (for chat):
+    Output JSON (Chat):
     {{ "is_chat": true }}
     """
     try:
@@ -79,9 +79,8 @@ def parse_expense_with_gemini(user_text):
         cleaned_text = clean_json_string(response.text)
         data = json.loads(cleaned_text)
         
-        if isinstance(data, dict) and data.get("is_chat"):
-            return None
-            
+        # Check Intent
+        if isinstance(data, dict) and data.get("is_chat"): return None
         if isinstance(data, dict): data = [data]
         
         valid_data = []
@@ -115,29 +114,69 @@ def delete_expense(data):
         return True, target['i'], target['date']
     return False, None, None
 
-def get_chat_response(query, user_data_context):
-    prompt = f"""
-    You are a Financial Analyst Assistant.
-    User Data (JSON): {user_data_context}
-    User Question: {query}
-    
-    --- RESPONSE LOGIC ---
-    MODE A: SUMMARY (Default)
-    If user asks "How much...", "Total...", "Summary":
-    1. Group similar items (Sum "Bus"). 
-    2. Format: "🚌 **Bus** (X trips): [Total]"
-    
-    MODE B: BREAKDOWN (If user asks "Breakdown", "List", "Details")
-    1. List every single entry sorted by date.
-    2. Format: "24 Nov: 50.0"
-    
-    General: Professional, friendly, accurate math.
+def get_chat_response(query, data_list):
+    """
+    Uses PANDAS for 100% accurate math, then Gemini for formatting.
+    """
+    if not data_list: return "📂 No data found."
+
+    # 1. PANDAS CALCULATION ENGINE
+    df = pd.DataFrame(data_list)
+    df['date'] = pd.to_datetime(df['date'])
+
+    # Ask Gemini only to extract FILTERS
+    today = datetime.now().strftime("%Y-%m-%d")
+    filter_prompt = f"""
+    User Query: "{query}" | Current Date: {today}
+    Extract search filters for Pandas.
+    Return JSON ONLY:
+    {{
+      "categories": [], (Empty if all)
+      "start_date": "YYYY-MM-DD", (e.g. 'November' -> 2025-11-01)
+      "end_date": "YYYY-MM-DD",
+      "intent": "summary" or "breakdown"
+    }}
     """
     try:
-        response = model.generate_content(prompt)
-        return response.text
+        response = model.generate_content(filter_prompt)
+        filters = json.loads(clean_json_string(response.text))
+        
+        # Apply Filters in Python
+        if filters.get('start_date'): df = df[df['date'] >= filters['start_date']]
+        if filters.get('end_date'): df = df[df['date'] <= filters['end_date']]
+        if filters.get('categories'): df = df[df['c'].isin(filters['categories'])]
+
+        # Calculate Exact Numbers
+        total_sum = df['a'].sum()
+        category_breakdown = df.groupby('c')['a'].sum().to_dict()
+        
+        item_list = ""
+        if filters.get('intent') == "breakdown":
+            sorted_df = df.sort_values(by='date', ascending=False)
+            item_list = sorted_df[['date', 'i', 'a']].to_string(index=False)
+
+        # Final Formatting Prompt
+        final_prompt = f"""
+        You are a Financial Analyst.
+        User Query: "{query}"
+        
+        I have calculated the EXACT math using Python. Use these numbers.
+        TOTAL: {total_sum}
+        BREAKDOWN: {category_breakdown}
+        DETAILS: {item_list}
+        
+        INSTRUCTIONS:
+        1. Start with the Grand Total (e.g., "💰 Total: 500").
+        2. Then list the breakdown using these emojis:
+           Food:🍜, Groceries:🥦, Travel:🚖, Medical:💊, Subscriptions:💳, Electronics:💻, Shopping:🛍️, Education:📚, Gifts:🎁, Outings:🎡, Rent/Utilities:⚡, Investments:💸, Entertainment:🎬, Personal Care:🛁, Loans/EMI:🏦, Misc:📦, Debt:📝, Loan Given:🤝.
+        3. If user asked for details/list, show the 'DETAILS' section.
+        4. Keep it clean and cool.
+        """
+        final_resp = model.generate_content(final_prompt)
+        return final_resp.text
+
     except Exception as e:
-        return "⚠️ My brain is fuzzy right now. Ask me again in a minute!"
+        return "⚠️ Calculation Error. Please try again."
 
 # import os
 # import google.generativeai as genai
@@ -376,6 +415,7 @@ def get_chat_response(query, user_data_context):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
