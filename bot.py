@@ -1,6 +1,4 @@
 import os
-import json
-from datetime import datetime
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -9,7 +7,7 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "http://localhost:8501" # Update to your live URL
+DASHBOARD_URL = "http://localhost:8501" 
 
 # --- KEEP ALIVE ---
 flask_app = Flask('')
@@ -30,27 +28,10 @@ CATEGORY_EMOJIS = {
 }
 
 def get_icon(data):
-    # 1. Check Action
     if data.get('action') == 'delete': return "🗑️"
-    
-    # 2. Check Income vs Expense
-    if data['a'] < 0: return "🤑" # Income
-    
-    # 3. Check Category Map
+    if data['a'] < 0: return "🤑"
     cat = data.get('c', 'Miscellaneous')
     return CATEGORY_EMOJIS.get(cat, "✅")
-
-# --- HELPER: FORMAT FOR AI ---
-def format_transactions(cursor_list):
-    clean_data = []
-    for entry in cursor_list:
-        clean_entry = {
-            "Date": entry['date'].strftime('%Y-%m-%d'),
-            "Item": entry['i'], "Amount": entry['a'], "Category": entry['c']
-        }
-        if entry.get('n'): clean_entry["Note"] = entry['n']
-        clean_data.append(clean_entry)
-    return json.dumps(clean_data)
 
 # --- BOT LOGIC ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,32 +41,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_lower = user_text.lower()
     
-    # --- STEP 1: PARSE ---
+    # --- STEP 1: PARSE INTENT ---
     parsed_list = parse_expense_with_gemini(user_text)
 
-    # --- PATH A: ANALYSIS ---
+    # --- PATH A: ANALYSIS / CHAT ---
     if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower or "calculate" in text_lower:
         
         if "dashboard" in text_lower:
              await update.message.reply_text(f"📊 **Dashboard:** [Click Here]({DASHBOARD_URL})", parse_mode='Markdown')
              return
         
+        # Fetch Memory (300 items)
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
-        data_list = list(cursor)
+        data_list = list(cursor) # <-- ⚠️ WE PASS THIS RAW LIST NOW
 
         if not data_list:
             await update.message.reply_text("📂 No data found yet.")
             return
 
-        clean_context_str = format_transactions(data_list)
         processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
-        answer = get_chat_response(user_text, clean_context_str)
+        
+        # ⚠️ PASS RAW DATA TO PANDAS ENGINE
+        answer = get_chat_response(user_text, data_list)
+        
         await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
         
     # --- PATH B: TRANSACTION ---
     else:
         reply_lines = []
-        total_session = 0
         
         for data in parsed_list:
             if data.get('action') == 'delete':
@@ -100,16 +83,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 icon = get_icon(data)
                 amount_str = f"{data['a']}"
                 
-                # Build beautiful line: "🍔 Burger: 150 (Food)"
                 line = f"{icon} **{data['i']}**: {amount_str}"
-                
-                # Add Note
                 if data.get('n'): line += f"\n   └ 📌 _{data['n']}_"
                 
                 reply_lines.append(line)
-                total_session += data['a']
 
-        # Construct Receipt Message
         header = f"🧾 **Saved {len(parsed_list)} Entries**"
         body = "\n".join(reply_lines)
         footer = f"────────────────\n📊 [Dashboard]({DASHBOARD_URL})"
@@ -217,6 +195,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
