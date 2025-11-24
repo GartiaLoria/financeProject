@@ -1,10 +1,10 @@
 import os
 import google.generativeai as genai
 from pymongo import MongoClient
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import re
-import pandas as pd # <--- The Math Engine
+import pandas as pd 
 import certifi
 
 # --- CONFIGURATION ---
@@ -12,7 +12,6 @@ MONGO_URI = os.getenv("MONGO_URI")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 
 # --- SETUP ---
-# We use certifi to ensure SSL works on all devices
 cluster = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = cluster["expense_tracker"]
 collection = db["expenses"]
@@ -20,12 +19,9 @@ collection = db["expenses"]
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# --- HELPER FUNCTIONS ---
+# --- FUNCTIONS ---
 
 def clean_json_string(text):
-    """
-    Cleans Gemini output to ensure valid JSON.
-    """
     text = text.replace('```json', '').replace('```', '').strip()
     if text.startswith('['):
         start = text.find('[')
@@ -38,52 +34,45 @@ def clean_json_string(text):
     return text
 
 def parse_expense_with_gemini(user_text):
-    """
-    Extracts transactions using STRICT USER RULES & 18 CATEGORIES.
-    """
     prompt = f"""
     You are a specialized Data Extractor. User Input: "{user_text}"
     
     STEP 1: IDENTIFY INTENT
-    - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{"is_chat": true}}
+    - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{ "is_chat": true }}
     - Is the user entering transaction data? -> Extract the data.
 
-    STEP 2: EXTRACT DATA (If transaction)
+    STEP 2: EXTRACT DATA
     - MATH: Calculate "A/B" immediately (e.g. "100/2" -> 50).
-    - NOTE: Extract context note into 'n' only if user says "save c", "context", or "note".
+    - NOTE: Extract context into 'n' only if user says "save c", "context".
 
     STEP 3: CATEGORIZE (STRICT 18 RULES)
-    1. Food: Meals, drinks, snacks, tea, restaurant, meal plans. NOT Outings.
-    2. Groceries: Raw kitchen items, fruits, vegetables, grains, spices.
-    3. Travel: Bus, auto, cab, bike, fuel, train, flight.
-    4. Medical: Doctor, medicine, tests, pharmacy, supplements.
-    5. Subscriptions: Netflix, Spotify, Gym, Cloud, Apps, Prime, Memberships.
-    6. Electronics: Gadgets, phones, chargers, repairs, appliances, headphones.
-    7. Shopping: Clothes, shoes, bags, accessories, watches, wallets.
-    8. Education: Books, courses, exams, stationery, work materials, skill dev.
-    9. Gifts: Birthday treats, gifts for others. NOT Outings.
-    10. Outings: Hangouts, events, festivals (Balijatra), clubs, trips.
-    11. Rent & Utilities: Rent, electricity, water, maintenance.
-    12. Investments: Savings, deposits, mutual funds.
-    13. Entertainment: Movie tickets, games, events (non-outing).
-    14. Personal Care: Soap, shampoo, cosmetics, hygiene.
-    15. Loans/EMI: Repaying loans, EMIs.
+    1. Food: Meals, drinks, snacks, tea, restaurant.
+    2. Groceries: Raw kitchen items, fruits, vegetables.
+    3. Travel: Bus, auto, cab, bike, fuel, train.
+    4. Medical: Doctor, medicine, tests.
+    5. Subscriptions: Netflix, Spotify, Gym, Apps.
+    6. Electronics: Gadgets, phones, chargers.
+    7. Shopping: Clothes, shoes, bags.
+    8. Education: Books, courses, exams.
+    9. Gifts: Birthday treats, gifts for others.
+    10. Outings: Hangouts, events, festivals (Balijatra).
+    11. Rent & Utilities: Rent, electricity, water.
+    12. Investments: Savings, deposits.
+    13. Entertainment: Movies, games (non-outing).
+    14. Personal Care: Soap, shampoo, cosmetics.
+    15. Loans/EMI: Repaying loans.
     16. Miscellaneous: Anything else.
-    17. Debt: Future payments ("Owe", "Will pay", "Bill due").
-    18. Loan Given: Past payments to others ("Lent", "Gave").
+    17. Debt: Future payments ("Owe").
+    18. Loan Given: Past payments ("Lent").
     
-    Output JSON (Transaction):
-    [ {{"action": "add", "i": "Item", "a": 50, "c": "Category", "n": ""}} ]
-    
-    Output JSON (Chat):
-    {{ "is_chat": true }}
+    Output JSON (Transaction): [ {{"action": "add", "i": "Item", "a": 50, "c": "Category", "n": ""}} ]
+    Output JSON (Chat): {{ "is_chat": true }}
     """
     try:
         response = model.generate_content(prompt)
         cleaned_text = clean_json_string(response.text)
         data = json.loads(cleaned_text)
         
-        # Check Intent
         if isinstance(data, dict) and data.get("is_chat"): return None
         if isinstance(data, dict): data = [data]
         
@@ -110,10 +99,8 @@ def add_expense(data):
     collection.insert_one(entry)
 
 def delete_expense(data):
-    # Find matching amount and similar item name
     query = {"a": data['a'], "i": {"$regex": data['i'], "$options": "i"}}
     matches = list(collection.find(query).sort("date", -1))
-    
     if len(matches) > 0:
         target = matches[0]
         collection.delete_one({"_id": target["_id"]})
@@ -126,21 +113,19 @@ def get_chat_response(query, data_list):
     """
     if not data_list: return "📂 No data found."
 
-    # 1. PANDAS CALCULATION ENGINE
-    # We load data into a DataFrame (like an Excel sheet in memory)
+    # 1. PANDAS ENGINE (Expects list of dicts)
     df = pd.DataFrame(data_list)
     df['date'] = pd.to_datetime(df['date'])
 
-    # 2. ASK GEMINI FOR FILTERS ONLY
+    # 2. ASK GEMINI FOR FILTERS
     today = datetime.now().strftime("%Y-%m-%d")
     filter_prompt = f"""
     User Query: "{query}" | Current Date: {today}
-    
-    Task: Extract search filters for a Database.
+    Task: Extract search filters.
     Return JSON ONLY:
     {{
-      "categories": ["Food", "Travel"], (List of strings. Empty [] if all)
-      "start_date": "YYYY-MM-DD", (Calculate based on 'November', 'Last week', etc.)
+      "categories": [], (Empty if all)
+      "start_date": "YYYY-MM-DD", (Start of month/week/etc)
       "end_date": "YYYY-MM-DD",
       "intent": "summary" or "breakdown"
     }}
@@ -149,60 +134,46 @@ def get_chat_response(query, data_list):
         response = model.generate_content(filter_prompt)
         filters = json.loads(clean_json_string(response.text))
         
-        # 3. APPLY FILTERS IN PYTHON (Precise Math)
         filtered_df = df.copy()
         
-        # Filter Date
+        # 3. APPLY FILTERS
         if filters.get('start_date'): 
             filtered_df = filtered_df[filtered_df['date'] >= filters['start_date']]
         if filters.get('end_date'): 
             filtered_df = filtered_df[filtered_df['date'] <= filters['end_date']]
-            
-        # Filter Category
         if filters.get('categories'): 
-            # Case-insensitive match
             filtered_df = filtered_df[filtered_df['c'].astype(str).str.lower().isin([x.lower() for x in filters['categories']])]
 
-        # 4. CALCULATE TOTALS
+        # 4. CALCULATE
         total_sum = filtered_df['a'].sum()
         
-        # Prepare breakdown data
         breakdown_text = ""
         if filters.get('intent') == "breakdown":
-            # List details: Date | Item | Amount
             details = filtered_df.sort_values(by='date', ascending=False)
             breakdown_text = details[['date', 'i', 'a']].to_string(index=False)
         else:
-            # Group by Category: Category | Sum
             cat_group = filtered_df.groupby('c')['a'].sum().to_dict()
             breakdown_text = str(cat_group)
 
-        # 5. FINAL FORMATTING (Gemini writes the receipt)
+        # 5. FORMATTING
         final_prompt = f"""
         You are a Financial Analyst.
         User Query: "{query}"
         
-        I have calculated the EXACT math using Python. Do NOT recalculate.
-        DATA TO REPORT:
-        - Total Sum: {total_sum}
-        - Breakdown Data: {breakdown_text}
+        DATA (Calculated by Python):
+        - Total: {total_sum}
+        - Breakdown: {breakdown_text}
         
         INSTRUCTIONS:
-        1. Start with the Grand Total (e.g., "💰 Total: 500").
-        2. If 'Breakdown Data' is a dictionary, list totals by category with emojis.
-        3. If 'Breakdown Data' is a list of items, show the date and item details.
-        4. Use these emojis:
-           Food:🍜, Groceries:🥦, Travel:🚖, Medical:💊, Subscriptions:💳, Electronics:💻, 
-           Shopping:🛍️, Education:📚, Gifts:🎁, Outings:🎡, Rent:⚡, Investments:💸, 
-           Entertainment:🎬, Personal Care:🛁, Loans:🏦, Misc:📦.
-        5. Keep it clean and readable.
+        1. Start with "💰 Total: {total_sum}".
+        2. List Breakdown with emojis (Food:🍜, Travel:🚖, etc).
+        3. If user asked for list/details, show the items.
         """
         final_resp = model.generate_content(final_prompt)
         return final_resp.text
 
     except Exception as e:
-        print(f"Error: {e}")
-        return "⚠️ Calculation Error. Please try again."
+        return f"⚠️ Calculation Error: {e}"
 
 # import os
 # import google.generativeai as genai
@@ -441,6 +412,7 @@ def get_chat_response(query, data_list):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
