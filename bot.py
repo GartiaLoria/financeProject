@@ -7,7 +7,29 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "https://financeproject-daozlrb2223siae3uzttph.streamlit.app/" # Update this to your real Streamlit URL
+DASHBOARD_URL = "https://your-app-url.onrender.com" # ⚠️ Put your real Render/Streamlit link here
+
+# --- EXPANDED EMOJI MAP ---
+CATEGORY_EMOJIS = {
+    "Food": "🍔", 
+    "Groceries": "🥦", 
+    "Travel": "🚕", 
+    "Medical": "💊",
+    "Subscriptions": "📅",
+    "Electronics": "🔌",
+    "Shopping": "🛍️",
+    "Education": "📚",
+    "Gifts": "🎁", 
+    "Outings": "🎉", 
+    "Rent & Utilities": "🏠", 
+    "Investments": "📈", 
+    "Entertainment": "🍿", 
+    "Personal Care": "🧴", 
+    "Loans/EMI": "🏦", 
+    "Debt": "📝", 
+    "Loan Given": "🤝", 
+    "Miscellaneous": "📦"
+}
 
 # --- KEEP ALIVE ---
 flask_app = Flask('')
@@ -26,64 +48,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_lower = user_text.lower()
     
-    # 1. QUESTIONS
-    if "?" in user_text or "how" in text_lower or "show" in text_lower or "dashboard" in text_lower or "total" in text_lower:
+    # --- STEP 1: PARSE INTENT ---
+    parsed_list = parse_expense_with_gemini(user_text)
+
+    # --- PATH A: CHAT / ANALYSIS ---
+    if parsed_list is None or "?" in user_text or any(k in text_lower for k in ["how", "total", "calculate", "summary", "breakdown"]):
+        
         if "dashboard" in text_lower:
-             await update.message.reply_text(f"📊 Dashboard: {DASHBOARD_URL}")
+             await update.message.reply_text(f"📊 [Click to Open Dashboard]({DASHBOARD_URL})", parse_mode='Markdown')
              return
         
+        # Memory: 300 Items
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
         data_context = list(cursor)
-        
+
         if not data_context:
             await update.message.reply_text("📂 No data found yet.")
             return
 
         processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
         answer = get_chat_response(user_text, str(data_context))
-        await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer)
+        await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
         
-    # 2. ADD / DELETE
+    # --- PATH B: TRANSACTION ---
     else:
-        parsed_list = parse_expense_with_gemini(user_text)
-        
-        if parsed_list:
-            reply_lines = []
-            for data in parsed_list:
-                # DELETE
-                if data.get('action') == 'delete':
-                    success, item, date = delete_expense(data)
-                    if success: 
-                        reply_lines.append(f"🗑️ **Deleted:** {item} ({data['a']})")
-                    else: 
-                        reply_lines.append(f"⚠️ **Not found:** {data['i']}")
+        reply_lines = []
+        for data in parsed_list:
+            if data.get('action') == 'delete':
+                success, item, date = delete_expense(data)
+                if success: 
+                    d_str = date.strftime('%d %b')
+                    reply_lines.append(f"🗑️ **Deleted:** {item} ({data['a']}) from {d_str}")
+                else: 
+                    reply_lines.append(f"⚠️ **Not Found:** {data['i']} ({data['a']})")
+            else:
+                add_expense(data)
                 
-                # ADD
-                else:
-                    add_expense(data)
-                    c = data['c']
-                    
-                    # --- ICON MAPPING ---
-                    if c == 'Debt': icon = "📝"
-                    elif c == 'Outings': icon = "🎉"
-                    elif c == 'Medical': icon = "💊"
-                    elif c == 'Subscriptions': icon = "🔄"
-                    elif c == 'Electronics': icon = "🔌"
-                    elif c == 'Shopping': icon = "🛍️"
-                    elif c == 'Education': icon = "📚"
-                    elif c == 'Travel': icon = "🚕"
-                    elif c == 'Food': icon = "🍔"
-                    elif data['a'] < 0: icon = "🤑"
-                    else: icon = "✅"
-                    
-                    line = f"{icon} {data['i']}: {data['a']} ({c})"
-                    if data.get('n'): line += f"\n   └ 📌 _{data['n']}_"
-                    reply_lines.append(line)
+                # Dynamic Emoji Logic
+                cat = data['c']
+                icon = CATEGORY_EMOJIS.get(cat, "✅") # Default to ✅ if category not in list
+                if data['a'] < 0: icon = "💰" 
+                
+                line = f"{icon} **{data['i']}**: {data['a']} _({cat})_"
+                if data.get('n'): line += f"\n   └ 📌 {data['n']}"
+                reply_lines.append(line)
 
-            summary = "\n".join(reply_lines)
-            await update.message.reply_text(f"**Saved:**\n\n{summary}\n────────────────\n📊 {DASHBOARD_URL}", parse_mode='Markdown')
-        else:
-            await update.message.reply_text("😅 I didn't understand.")
+        summary = "\n".join(reply_lines)
+        
+        msg = (
+            f"✨ **Transaction Saved**\n\n"
+            f"{summary}\n"
+            f"────────────────\n"
+            f"📈 [Open Dashboard]({DASHBOARD_URL})"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
 
 if __name__ == '__main__':
     keep_alive()
@@ -186,6 +204,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
