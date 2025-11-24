@@ -4,7 +4,6 @@ from pymongo import MongoClient
 from datetime import datetime
 import json
 import re
-import pandas as pd 
 import certifi
 
 # --- CONFIGURATION ---
@@ -17,7 +16,7 @@ db = cluster["expense_tracker"]
 collection = db["expenses"]
 
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- FUNCTIONS ---
 
@@ -35,13 +34,13 @@ def clean_json_string(text):
 
 def parse_expense_with_gemini(user_text):
     """
-    Extracts transactions using STRICT USER RULES & 18 CATEGORIES.
+    Extracts transactions using the STRICT 18-Category Rulebook.
     """
     prompt = f"""
     You are a specialized Data Extractor. User Input: "{user_text}"
     
     STEP 1: IDENTIFY INTENT
-    - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{"is_chat": true}}
+    - Is the user asking a question, asking for a breakdown, or correcting a previous calculation? -> Return {{ "is_chat": true }}
     - Is the user entering transaction data? -> Extract the data.
 
     STEP 2: EXTRACT DATA (If transaction)
@@ -79,16 +78,14 @@ def parse_expense_with_gemini(user_text):
         cleaned_text = clean_json_string(response.text)
         data = json.loads(cleaned_text)
         
-        # Check Intent
         if isinstance(data, dict) and data.get("is_chat"): return None
         if isinstance(data, dict): data = [data]
         
         valid_data = []
         for entry in data:
-            if 'a' not in entry: continue 
-            # Sanitize simple strings
-            if 'i' in entry: entry['i'] = str(entry['i']).strip().title()
-            if 'c' in entry: entry['c'] = str(entry['c']).strip().title()
+            if 'a' not in entry or entry['a'] == 0: continue
+            if 'i' in entry: entry['i'] = str(entry['i']).title()
+            if 'c' in entry: entry['c'] = str(entry['c']).title()
             if 'a' in entry: entry['a'] = float(entry['a'])
             if 'n' not in entry: entry['n'] = ""
             valid_data.append(entry)
@@ -109,77 +106,40 @@ def add_expense(data):
 def delete_expense(data):
     query = {"a": data['a'], "i": {"$regex": data['i'], "$options": "i"}}
     matches = list(collection.find(query).sort("date", -1))
-    
     if len(matches) > 0:
         target = matches[0]
         collection.delete_one({"_id": target["_id"]})
         return True, target['i'], target['date']
     return False, None, None
 
-def get_chat_response(query, data_list):
+def get_chat_response(query, user_data_context):
     """
-    Uses PANDAS for math, outputs HTML for Telegram.
+    Smart Analyzer that strictly uses Markdown (No HTML).
     """
-    if not data_list: return "📂 No data found."
-
-    df = pd.DataFrame(data_list)
-    df['date'] = pd.to_datetime(df['date'])
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    filter_prompt = f"""
-    User Query: "{query}" | Current Date: {today}
-    Task: Extract search filters.
-    Return JSON ONLY:
-    {{
-      "categories": [], 
-      "start_date": "YYYY-MM-DD", 
-      "end_date": "YYYY-MM-DD",
-      "intent": "summary" or "breakdown"
-    }}
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    prompt = f"""
+    You are a Financial Analyst.
+    Current Date: {today_str}
+    User Data (JSON): {user_data_context}
+    User Question: {query}
+    
+    CRITICAL FORMATTING RULES:
+    1. **STRICTLY NO HTML TAGS**. Do NOT use <ul>, <li>, <b>, <br>.
+    2. Use **Markdown** only. 
+       - Bold: **text**
+       - Lists: * item
+    3. If the answer involves numbers, calculate the totals accurately first.
+    
+    LOGIC:
+    1. Filter JSON by date (Today is {today_str}). If user says "November", look for 2025-11.
+    2. Group similar items (e.g. "Travel" sum) unless user asks for a breakdown.
+    3. Be concise and helpful.
     """
     try:
-        response = model.generate_content(filter_prompt)
-        filters = json.loads(clean_json_string(response.text))
-        
-        filtered_df = df.copy()
-        
-        if filters.get('start_date'): 
-            filtered_df = filtered_df[filtered_df['date'] >= filters['start_date']]
-        if filters.get('end_date'): 
-            filtered_df = filtered_df[filtered_df['date'] <= filters['end_date']]
-        if filters.get('categories'): 
-            filtered_df = filtered_df[filtered_df['c'].astype(str).str.lower().isin([x.lower() for x in filters['categories']])]
-
-        total_sum = filtered_df['a'].sum()
-        
-        breakdown_text = ""
-        if filters.get('intent') == "breakdown":
-            details = filtered_df.sort_values(by='date', ascending=False)
-            breakdown_text = details[['date', 'i', 'a']].to_string(index=False)
-        else:
-            cat_group = filtered_df.groupby('c')['a'].sum().to_dict()
-            breakdown_text = str(cat_group)
-
-        # ⚠️ IMPORTANT: We tell Gemini to use HTML tags <b> and <i>
-        final_prompt = f"""
-        You are a Financial Analyst.
-        User Query: "{query}"
-        
-        DATA:
-        - Total: {total_sum}
-        - Breakdown: {breakdown_text}
-        
-        INSTRUCTIONS:
-        1. Start with "💰 <b>Total: {total_sum}</b>".
-        2. List breakdown. Use <b>bold</b> for categories/items.
-        3. Use these emojis: Food:🍜, Travel:🚖, etc.
-        4. Output format MUST be HTML compatible (use <b> not **).
-        """
-        final_resp = model.generate_content(final_prompt)
-        return final_resp.text
-
-    except Exception as e:
-        return f"⚠️ Calculation Error: {e}"
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "⚠️ Calculation Error."
 
 # import os
 # import google.generativeai as genai
@@ -418,6 +378,7 @@ def get_chat_response(query, data_list):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
