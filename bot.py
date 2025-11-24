@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -7,29 +9,7 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "https://your-app-url.onrender.com" # ⚠️ REPLACE THIS WITH YOUR REAL URL
-
-# --- COOL EMOJI MAP ---
-CATEGORY_EMOJIS = {
-    "Food": "🍜", 
-    "Groceries": "🥦", 
-    "Travel": "🚖", 
-    "Medical": "💊",
-    "Subscriptions": "💳", 
-    "Electronics": "💻", 
-    "Shopping": "🛍️",
-    "Education": "📚",
-    "Gifts": "🎁", 
-    "Outings": "🎡", 
-    "Rent & Utilities": "⚡", 
-    "Investments": "💸", 
-    "Entertainment": "🎬", 
-    "Personal Care": "🛁", 
-    "Loans/EMI": "🏦", 
-    "Debt": "📝", 
-    "Loan Given": "🤝", 
-    "Miscellaneous": "📦"
-}
+DASHBOARD_URL = "http://localhost:8501" # Update to your live URL
 
 # --- KEEP ALIVE ---
 flask_app = Flask('')
@@ -40,6 +20,38 @@ def keep_alive():
     t = Thread(target=run_http)
     t.start()
 
+# --- EMOJI MAPPING ---
+CATEGORY_EMOJIS = {
+    "Food": "🍔", "Groceries": "🥦", "Travel": "🚕", "Medical": "💊",
+    "Subscriptions": "📅", "Electronics": "🔌", "Shopping": "🛍️", "Education": "📚",
+    "Gifts": "🎁", "Outings": "🎉", "Rent & Utilities": "🏠", "Investments": "📈",
+    "Entertainment": "🎬", "Personal Care": "🧴", "Loans/EMI": "🏦",
+    "Miscellaneous": "📦", "Debt": "📝", "Loan Given": "💸"
+}
+
+def get_icon(data):
+    # 1. Check Action
+    if data.get('action') == 'delete': return "🗑️"
+    
+    # 2. Check Income vs Expense
+    if data['a'] < 0: return "🤑" # Income
+    
+    # 3. Check Category Map
+    cat = data.get('c', 'Miscellaneous')
+    return CATEGORY_EMOJIS.get(cat, "✅")
+
+# --- HELPER: FORMAT FOR AI ---
+def format_transactions(cursor_list):
+    clean_data = []
+    for entry in cursor_list:
+        clean_entry = {
+            "Date": entry['date'].strftime('%Y-%m-%d'),
+            "Item": entry['i'], "Amount": entry['a'], "Category": entry['c']
+        }
+        if entry.get('n'): clean_entry["Note"] = entry['n']
+        clean_data.append(clean_entry)
+    return json.dumps(clean_data)
+
 # --- BOT LOGIC ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -48,62 +60,61 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_lower = user_text.lower()
     
-    # --- STEP 1: PARSE INTENT ---
+    # --- STEP 1: PARSE ---
     parsed_list = parse_expense_with_gemini(user_text)
 
-    # --- PATH A: CHAT / ANALYSIS ---
-    if parsed_list is None or "?" in user_text or any(k in text_lower for k in ["how", "total", "calculate", "summary", "breakdown"]):
+    # --- PATH A: ANALYSIS ---
+    if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower or "calculate" in text_lower:
         
         if "dashboard" in text_lower:
-             await update.message.reply_text(f"📊 [Click to Open Dashboard]({DASHBOARD_URL})", parse_mode='Markdown')
+             await update.message.reply_text(f"📊 **Dashboard:** [Click Here]({DASHBOARD_URL})", parse_mode='Markdown')
              return
         
-        # MEMORY: 300 Items
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
-        data_context = list(cursor)
+        data_list = list(cursor)
 
-        if not data_context:
+        if not data_list:
             await update.message.reply_text("📂 No data found yet.")
             return
 
-        processing_msg = await update.message.reply_text(f"🤔 Crunching the numbers...")
-        # We pass the LIST of data, not string, so Pandas can use it
-        answer = get_chat_response(user_text, data_context) 
+        clean_context_str = format_transactions(data_list)
+        processing_msg = await update.message.reply_text(f"🤔 Analyzing...")
+        answer = get_chat_response(user_text, clean_context_str)
         await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
         
     # --- PATH B: TRANSACTION ---
     else:
         reply_lines = []
+        total_session = 0
+        
         for data in parsed_list:
             if data.get('action') == 'delete':
                 success, item, date = delete_expense(data)
                 if success: 
                     d_str = date.strftime('%d %b')
-                    reply_lines.append(f"🗑️ **Deleted:** {item} ({data['a']}) from {d_str}")
+                    reply_lines.append(f"🗑️ ~{item}~ ({data['a']}) removed")
                 else: 
-                    reply_lines.append(f"⚠️ **Not Found:** {data['i']} ({data['a']})")
+                    reply_lines.append(f"⚠️ Not found: {data['i']}")
             else:
                 add_expense(data)
+                icon = get_icon(data)
+                amount_str = f"{data['a']}"
                 
-                # Dynamic Emoji Logic
-                cat = data['c']
-                icon = CATEGORY_EMOJIS.get(cat, "✅") 
-                if data['a'] < 0: icon = "💰" # Special icon for Income
+                # Build beautiful line: "🍔 Burger: 150 (Food)"
+                line = f"{icon} **{data['i']}**: {amount_str}"
                 
-                line = f"{icon} **{data['i']}**: {data['a']} _({cat})_"
-                if data.get('n'): line += f"\n   └ 🎗️ _{data['n']}_" # Cool Indented Note
+                # Add Note
+                if data.get('n'): line += f"\n   └ 📌 _{data['n']}_"
+                
                 reply_lines.append(line)
+                total_session += data['a']
 
-        summary = "\n".join(reply_lines)
+        # Construct Receipt Message
+        header = f"🧾 **Saved {len(parsed_list)} Entries**"
+        body = "\n".join(reply_lines)
+        footer = f"────────────────\n📊 [Dashboard]({DASHBOARD_URL})"
         
-        # Cool Receipt Style Message
-        msg = (
-            f"✨ **Transaction Saved** ✨\n\n"
-            f"{summary}\n"
-            f"────────────────\n"
-            f"📉 [Dashboard]({DASHBOARD_URL})"
-        )
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        await update.message.reply_text(f"{header}\n\n{body}\n{footer}", parse_mode='Markdown')
 
 if __name__ == '__main__':
     keep_alive()
@@ -206,6 +217,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
