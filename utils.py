@@ -4,7 +4,9 @@ from pymongo import MongoClient
 from datetime import datetime
 import json
 import re
+import time
 import certifi
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- CONFIGURATION ---
 MONGO_URI = os.getenv("MONGO_URI")
@@ -16,7 +18,16 @@ db = cluster["expense_tracker"]
 collection = db["expenses"]
 
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- SAFETY SETTINGS ---
+safety_config = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
+model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_config)
 
 # --- FUNCTIONS ---
 
@@ -33,9 +44,6 @@ def clean_json_string(text):
     return text
 
 def parse_expense_with_gemini(user_text):
-    """
-    Extracts transactions using the STRICT 18-Category Rulebook.
-    """
     prompt = f"""
     You are a specialized Data Extractor. User Input: "{user_text}"
     
@@ -89,18 +97,13 @@ def parse_expense_with_gemini(user_text):
             if 'a' in entry: entry['a'] = float(entry['a'])
             if 'n' not in entry: entry['n'] = ""
             valid_data.append(entry)
-            
         return valid_data if valid_data else None
-
     except Exception as e:
         print(f"Parsing Error: {e}")
         return None
 
 def add_expense(data):
-    entry = {
-        "i": data['i'], "a": data['a'], "c": data['c'], 
-        "n": data.get('n', ""), "date": datetime.now()
-    }
+    entry = {"i": data['i'], "a": data['a'], "c": data['c'], "n": data.get('n', ""), "date": datetime.now()}
     collection.insert_one(entry)
 
 def delete_expense(data):
@@ -113,9 +116,6 @@ def delete_expense(data):
     return False, None, None
 
 def get_chat_response(query, user_data_context):
-    """
-    Smart Analyzer that strictly uses Markdown (No HTML).
-    """
     today_str = datetime.now().strftime('%Y-%m-%d')
     prompt = f"""
     You are a Financial Analyst.
@@ -124,22 +124,23 @@ def get_chat_response(query, user_data_context):
     User Question: {query}
     
     CRITICAL FORMATTING RULES:
-    1. **STRICTLY NO HTML TAGS**. Do NOT use <ul>, <li>, <b>, <br>.
-    2. Use **Markdown** only. 
-       - Bold: **text**
-       - Lists: * item
-    3. If the answer involves numbers, calculate the totals accurately first.
+    1. Do NOT use HTML tags. Use Markdown (**Bold**).
     
     LOGIC:
-    1. Filter JSON by date (Today is {today_str}). If user says "November", look for 2025-11.
-    2. Group similar items (e.g. "Travel" sum) unless user asks for a breakdown.
-    3. Be concise and helpful.
+    1. Filter JSON by date (Today is {today_str}).
+    2. Sum items accurately.
+    3. If asked for a breakdown, list items with dates.
     """
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except:
-        return "⚠️ Calculation Error."
+    
+    for attempt in range(3):
+        try:
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed: {e}")
+            time.sleep(1)
+            
+    return f"⚠️ Error: Google AI is blocking the response. Check Render logs."
 
 # import os
 # import google.generativeai as genai
@@ -378,6 +379,7 @@ def get_chat_response(query, user_data_context):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
