@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from flask import Flask
 from threading import Thread
@@ -42,6 +43,24 @@ def format_transactions(cursor_list):
         clean_data.append(clean_entry)
     return json.dumps(clean_data)
 
+# --- EMERGENCY FALLBACK PARSER ---
+def manual_fallback_parse(text):
+    """
+    If AI fails, try to capture 'Item Amount' using simple regex.
+    """
+    match = re.search(r'^(.+?)\s+(\d+(\.\d+)?)$', text)
+    if match:
+        item = match.group(1).strip().title()
+        amount = float(match.group(2))
+        return [{
+            "action": "add",
+            "i": item,
+            "a": amount,
+            "c": "Miscellaneous", 
+            "n": "Manual Fallback"
+        }]
+    return None
+
 # --- BOT LOGIC ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -50,16 +69,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_lower = user_text.lower()
     
-    # --- PATH A: ANALYSIS / CHAT ---
+    # 1. TRY AI PARSING
     parsed_list = parse_expense_with_gemini(user_text)
 
-    if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower or "calculate" in text_lower:
+    # 2. IF AI FAILS, TRY MANUAL FALLBACK
+    if parsed_list is None:
+        parsed_list = manual_fallback_parse(user_text)
+
+    # 3. IF BOTH FAIL -> ASSUME CHAT / ANALYSIS
+    if parsed_list is None or "?" in user_text or "how" in text_lower or "total" in text_lower:
         
         if "dashboard" in text_lower:
-             await update.message.reply_text(f"📊 **Dashboard Link:**\n{DASHBOARD_URL}", parse_mode='Markdown')
+             await update.message.reply_text(f"📊 **Dashboard:**\n{DASHBOARD_URL}", parse_mode='Markdown')
              return
         
-        # Memory: 300 Items
         cursor = collection.find({}, {"_id": 0}).sort("date", -1).limit(300)
         data_list = list(cursor)
 
@@ -72,42 +95,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         answer = get_chat_response(user_text, clean_context_str)
         
-        # Safe Markdown Reply
         try:
             await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode='Markdown')
-        except Exception:
+        except:
             await context.bot.edit_message_text(chat_id=user_id, message_id=processing_msg.message_id, text=answer, parse_mode=None)
         
-    # --- PATH B: SAVE TRANSACTION ---
+    # 4. SAVE TRANSACTION
     else:
         reply_lines = []
         for data in parsed_list:
             if data.get('action') == 'delete':
-                success, deleted_item, deleted_date = delete_expense(data)
+                success, item, date = delete_expense(data)
                 if success: 
-                    date_str = deleted_date.strftime('%d %b')
-                    reply_lines.append(f"🗑️ **Deleted:** {deleted_item} ({data['a']})")
+                    d_str = date.strftime('%d %b')
+                    reply_lines.append(f"🗑️ **Deleted:** {item} ({data['a']})")
                 else: 
-                    reply_lines.append(f"⚠️ **Not Found:** {data['i']} ({data['a']})")
+                    reply_lines.append(f"⚠️ **Not Found:** {data['i']}")
             else:
                 add_expense(data)
+                
+                # Get Emoji
                 emoji = get_category_emoji(data['c'])
+                if data['a'] < 0: emoji = "🤑"
                 
-                # Special icon for Income/Repayment
-                if data['a'] < 0: 
-                    emoji = "🤑"
+                line = f"{emoji} **{data['i']}**\n     └ {data['a']}  |  _{data['c']}_"
                 
-                # Receipt Style Line
-                line = f"{emoji} **{data['i']}**\n      └ {data['a']}  |  _{data['c']}_"
-                
-                if data.get('n'): 
-                    line += f"\n      └ 📌 {data['n']}"
+                if data.get('n') and "Manual" not in data['n']: 
+                    line += f"\n     └ 📌 {data['n']}"
                 
                 reply_lines.append(line)
 
         summary = "\n\n".join(reply_lines)
         receipt = f"🧾 **Transaction Saved**\n────────────────\n{summary}\n────────────────\n📊 [Dashboard]({DASHBOARD_URL})"
-        
         try:
             await update.message.reply_text(receipt, parse_mode='Markdown')
         except:
@@ -214,6 +233,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
