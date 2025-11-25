@@ -10,7 +10,7 @@ from utils import parse_expense_with_gemini, add_expense, delete_expense, get_ch
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHBOARD_URL = "http://localhost:8501" 
+DASHBOARD_URL = "https://financeproject-daozlrb2223siae3uzttph.streamlit.app/" 
 
 # --- KEEP ALIVE ---
 flask_app = Flask('')
@@ -233,6 +233,7 @@ if __name__ == '__main__':
 #     app.add_handler(echo_handler)
 #     print("Bot is running...")
 #     app.run_polling()
+
 
 
 
