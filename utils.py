@@ -19,7 +19,7 @@ collection = db["expenses"]
 
 genai.configure(api_key=GEMINI_KEY)
 
-# --- SAFETY SETTINGS ---
+# --- SAFETY SETTINGS (Disable filters) ---
 safety_config = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -32,16 +32,29 @@ model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_config)
 # --- FUNCTIONS ---
 
 def clean_json_string(text):
+    """
+    Robust JSON extractor using Regex. 
+    Finds the first [...] or {...} block.
+    """
     text = text.replace('```json', '').replace('```', '').strip()
-    if text.startswith('['):
-        start = text.find('[')
-        end = text.rfind(']')
-        if start != -1 and end != -1: return text[start:end+1]
-    else:
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1: return text[start:end+1]
+    match = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
+    if match:
+        return match.group(1)
     return text
+
+def safe_float_conversion(value):
+    """
+    Handles numbers (50), strings ("50"), and math ("100/2").
+    """
+    try:
+        if isinstance(value, (int, float)): return float(value)
+        if isinstance(value, str):
+            # Clean string to only allow math chars
+            clean_math = re.sub(r'[^0-9\.\/\*\+\-\(\)]', '', value)
+            return float(eval(clean_math))
+    except:
+        return 0.0
+    return 0.0
 
 def parse_expense_with_gemini(user_text):
     prompt = f"""
@@ -91,15 +104,22 @@ def parse_expense_with_gemini(user_text):
         
         valid_data = []
         for entry in data:
-            if 'a' not in entry or entry['a'] == 0: continue
+            # Title Case
             if 'i' in entry: entry['i'] = str(entry['i']).title()
             if 'c' in entry: entry['c'] = str(entry['c']).title()
-            if 'a' in entry: entry['a'] = float(entry['a'])
+            
+            # Robust Math
+            raw_amount = entry.get('a', 0)
+            entry['a'] = safe_float_conversion(raw_amount)
+            
+            if entry['a'] == 0: continue
             if 'n' not in entry: entry['n'] = ""
             valid_data.append(entry)
+            
         return valid_data if valid_data else None
+
     except Exception as e:
-        print(f"Parsing Error: {e}")
+        print(f"Parsing Logic Error: {e}")
         return None
 
 def add_expense(data):
@@ -118,29 +138,25 @@ def delete_expense(data):
 def get_chat_response(query, user_data_context):
     today_str = datetime.now().strftime('%Y-%m-%d')
     prompt = f"""
-    You are a Financial Analyst.
-    Current Date: {today_str}
-    User Data (JSON): {user_data_context}
+    You are a Financial Analyst. Today: {today_str}
     User Question: {query}
+    Data: {user_data_context}
     
-    CRITICAL FORMATTING RULES:
-    1. Do NOT use HTML tags. Use Markdown (**Bold**).
-    
-    LOGIC:
-    1. Filter JSON by date (Today is {today_str}).
+    RULES:
+    1. Filter data by date relative to today.
     2. Sum items accurately.
-    3. If asked for a breakdown, list items with dates.
+    3. Use Markdown (**bold**). NO HTML.
     """
     
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            print(f"Attempt {attempt+1} failed: {e}")
+            print(f"Chat Attempt {attempt+1} Failed: {e}")
             time.sleep(1)
             
-    return f"⚠️ Error: Google AI is blocking the response. Check Render logs."
+    return "⚠️ Google AI is currently overloaded or blocking this request. Please try again in 1 minute."
 
 # import os
 # import google.generativeai as genai
@@ -379,6 +395,7 @@ def get_chat_response(query, user_data_context):
 #     response = model.generate_content(prompt)
 
 #     return response.text
+
 
 
 
